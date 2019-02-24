@@ -53,9 +53,42 @@ bool loadTimestampsIntoVector(
     return true;
 }
 
-void sync(std::vector<uint64_t> vlp_ts_vec, std::vector<uint64_t> cam_ts_vec)
+bool writeTimestamps(std::string path, std::vector<std::string> timestamps, std::vector<int> index) 
 {
+     
+}
 
+void sync(std::vector<uint64_t> vlp_ts_vec, std::vector<uint64_t> cam_ts_vec,
+    std::vector<int>& vlp_sync, std::vector<int>& cam_sync)
+{
+    // in our case assume lidar dara start before camera
+    int curr_vlp = 0, curr_cam = 0;
+    for (int i = 0; i < vlp_ts_vec.size(); i++) {
+        // check if overflow or not!!
+        int64_t diff = (int64_t)cam_ts_vec[0] - (int64_t)vlp_ts_vec[i]; 
+        if (diff > 0) {
+            curr_vlp = i;
+        }   
+        else break;
+    }
+
+    for (int i = curr_vlp; i < vlp_ts_vec.size(); i++) {
+          
+        for (int j = curr_cam; j < cam_ts_vec.size(); j++) {
+            auto t_vlp = (int64_t)vlp_ts_vec[i] / 1000000;
+            auto t_cam = (int64_t)cam_ts_vec[j] / 1000000;
+            if (t_cam - t_vlp < 0) {
+                curr_cam = j;
+            }       
+            else {
+                vlp_sync.push_back(i);
+                cam_sync.push_back(curr_cam);
+                break;
+            } 
+        }
+    }
+    std::cout << "________ size = " << vlp_sync.size() << std::endl;
+    std::cout << "________ size = " << cam_sync.size() << std::endl;
 
 }
 
@@ -94,6 +127,7 @@ int main(int argc, char *argv[])
     std::vector<uint64_t> vlp_ts_vec, cam_ts_vec;
     std::vector<int> vlp_sync, cam_sync;
 
+    
     if (argc > 1)
     {
         std::string fn = "../";
@@ -125,7 +159,7 @@ int main(int argc, char *argv[])
     std::cout << "_____________________________________" << std::endl;
 
     // run sync algorithm
-    sync();
+    sync(vlp_ts_vec, cam_ts_vec, vlp_sync, cam_sync);
 
     // test filesystem
     std::vector<std::string> files;
@@ -143,8 +177,7 @@ int main(int argc, char *argv[])
     
     
     // save to new directory
-    save_sync_data(sync_path, files);
-
+    //save_sync_data(sync_path, files);
 
 
     std::cout << __LINE__ << __func__ << __FILE__ << std::endl;
