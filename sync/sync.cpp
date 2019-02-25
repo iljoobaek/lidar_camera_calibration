@@ -2,6 +2,7 @@
 #include <vector>
 #include <string>
 #include <sstream>
+#include <iomanip>
 #include <fstream> // for read/write to file
 #include <ctime>
 #include <cstdint>
@@ -125,13 +126,18 @@ bool save_sync_data(std::string source_data_path, std::string target_data_path,
     
     fs::path targetParent = target_data_path;
     fs::create_directories(targetParent); // Recursively create target directory if not existing.
+    int new_ind = 0;
     for (int ind : index) 
     {
         fs::path sourceFile = files[ind];
-        auto target = targetParent / sourceFile.filename();
+        fs::path targetFile = files[new_ind++];
+        auto target = targetParent / targetFile.filename();
         
         //std::cout << "source: " << sourceFile << std::endl;
         //std::cout << "target: " << target << std::endl;
+        // std::stringstream ss;
+        // ss << std::fixed << std::setprecision(10) << new_ind++;
+        // std::string mystring = ss.str();
         try
         {
             fs::copy_file(sourceFile, target, fs::copy_options::overwrite_existing);
