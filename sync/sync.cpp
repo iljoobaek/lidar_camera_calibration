@@ -84,7 +84,6 @@ void sync(std::vector<uint64_t> vlp_ts_vec, std::vector<uint64_t> cam_ts_vec,
     }
 
     for (int i = curr_vlp; i < vlp_ts_vec.size(); i++) {
-          
         for (int j = curr_cam; j < cam_ts_vec.size(); j++) {
             auto t_vlp = (int64_t)vlp_ts_vec[i] / 1000000;
             auto t_cam = (int64_t)cam_ts_vec[j] / 1000000;
@@ -98,8 +97,9 @@ void sync(std::vector<uint64_t> vlp_ts_vec, std::vector<uint64_t> cam_ts_vec,
             } 
         }
     }
-    std::cout << "________ size = " << vlp_sync.size() << std::endl;
-    std::cout << "________ size = " << cam_sync.size() << std::endl;
+    std::cout << "Before:" << std::endl;
+    std::cout << "vlp size = " << vlp_sync.size() << std::endl;
+    std::cout << "cam size = " << cam_sync.size() << std::endl;
     int deleted  = 0;
     for (int i = 1; i < cam_sync.size(); i++) {
         if (cam_sync[i] == cam_sync[i-1]) {
@@ -107,6 +107,10 @@ void sync(std::vector<uint64_t> vlp_ts_vec, std::vector<uint64_t> cam_ts_vec,
         }
     }
     cam_sync.erase( std::unique( cam_sync.begin(), cam_sync.end() ), cam_sync.end() );
+    std::cout << "------------------------------" << std::endl;
+    std::cout << "After:" << std::endl;
+    std::cout << "vlp size = " << vlp_sync.size() << std::endl;
+    std::cout << "cam size = " << cam_sync.size() << std::endl;
 }
 
 /* save_sync_data takes sync_data_path and files vector as input
@@ -135,9 +139,6 @@ bool save_sync_data(std::string source_data_path, std::string target_data_path,
         
         //std::cout << "source: " << sourceFile << std::endl;
         //std::cout << "target: " << target << std::endl;
-        // std::stringstream ss;
-        // ss << std::fixed << std::setprecision(10) << new_ind++;
-        // std::string mystring = ss.str();
         try
         {
             fs::copy_file(sourceFile, target, fs::copy_options::overwrite_existing);
@@ -146,7 +147,6 @@ bool save_sync_data(std::string source_data_path, std::string target_data_path,
         {
             std::cout << e.what();
         }
-
     }
     return true;
 }
@@ -169,10 +169,6 @@ int main(int argc, char *argv[])
         fn += argv[1];
         source_path[0] = fn;
         sync_path[0] = fn + "_sync";
-        vlp_ts_path = fn + "/velodyne_points/timestamps.txt";
-        cam_ts_path = fn + "/image_01/timestamps.txt";
-        vlp_data_path = fn + "/velodyne_points/data";
-        cam_data_path = fn + "/image_01/data";
         source_path[1] = fn + "/velodyne_points/timestamps.txt";
         source_path[3] = fn + "/image_01/timestamps.txt";
         source_path[2] = fn + "/velodyne_points/data";
@@ -193,10 +189,6 @@ int main(int argc, char *argv[])
     // store timestamps from both vlp-16 and camera
     loadTimestampsIntoVector(vlp_ts_path, &vlp_ts_vec, &vlp_ts);
     loadTimestampsIntoVector(cam_ts_path, &cam_ts_vec, &cam_ts);
-
-    std::cout << "vlp timestamps: " << vlp_ts_vec.size() << std::endl;
-    std::cout << "cam timestamps: " << cam_ts_vec.size() << std::endl;
-    std::cout << "_____________________________________" << std::endl;
 
     // run sync algorithm
     sync(vlp_ts_vec, cam_ts_vec, vlp_sync, cam_sync);
