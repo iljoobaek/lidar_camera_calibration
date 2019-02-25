@@ -13,7 +13,8 @@ namespace fs = std::experimental::filesystem; // experimental before c++17
 
 // function from ethz-asl/kitti_to_rosbag
 bool loadTimestampsIntoVector(
-    const std::string &filename, std::vector<uint64_t> *timestamp_vec)
+    const std::string &filename, std::vector<uint64_t> *timestamp_vec,
+    std::vector<std::string> *ts_lines)
 {
     std::ifstream import_file(filename, std::ios::in);
     if (!import_file)
@@ -28,6 +29,7 @@ bool loadTimestampsIntoVector(
     {
         std::stringstream line_stream(line);
         //std::cout << line << std::endl;
+        ts_lines->push_back(line);
         std::string timestamp_string = line_stream.str();
         std::tm t = {};
         t.tm_year = std::stoi(timestamp_string.substr(0, 4)) - 1900;
@@ -53,9 +55,17 @@ bool loadTimestampsIntoVector(
     return true;
 }
 
-bool writeTimestamps(std::string path, std::vector<std::string> timestamps, std::vector<int> index) 
+bool writeTimestamps(std::string filename, std::vector<std::string> timestamps, std::vector<int> index) 
 {
-     
+    std::ofstream export_file(filename, std::ios::out);
+    if (!export_file)
+    {
+        return false;
+    }
+    for (int ind : index) {
+        export_file << timestamps[ind] << std::endl;
+    }
+    export_file.close();    
 }
 
 void sync(std::vector<uint64_t> vlp_ts_vec, std::vector<uint64_t> cam_ts_vec,
@@ -89,23 +99,39 @@ void sync(std::vector<uint64_t> vlp_ts_vec, std::vector<uint64_t> cam_ts_vec,
     }
     std::cout << "________ size = " << vlp_sync.size() << std::endl;
     std::cout << "________ size = " << cam_sync.size() << std::endl;
-
+    int deleted  = 0;
+    for (int i = 1; i < cam_sync.size(); i++) {
+        if (cam_sync[i] == cam_sync[i-1]) {
+            vlp_sync.erase(vlp_sync.begin()+i-deleted);
+        }
+    }
+    cam_sync.erase( std::unique( cam_sync.begin(), cam_sync.end() ), cam_sync.end() );
 }
 
 /* save_sync_data takes sync_data_path and files vector as input
    and copy the data to the new place
 */
-bool save_sync_data(std::vector<std::string> sync_path, std::vector<std::string> files) 
+bool save_sync_data(std::string source_data_path, std::string target_data_path,
+    std::vector<int> index) 
 { 
-    fs::path targetParent = sync_path[2];
-    fs::create_directories(targetParent); // Recursively create target directory if not existing.
-    for (auto data : files)
+    std::vector<std::string> files;
+    std::string path = source_data_path;
+    for (const auto &entry : fs::directory_iterator(path))
     {
-        fs::path sourceFile = data;
+        //std::cout << entry.path() << std::endl;
+        files.push_back(entry.path());
+    }
+    std::sort(files.begin(), files.end());
+    
+    fs::path targetParent = target_data_path;
+    fs::create_directories(targetParent); // Recursively create target directory if not existing.
+    for (int ind : index) 
+    {
+        fs::path sourceFile = files[ind];
         auto target = targetParent / sourceFile.filename();
         
-        std::cout << "source: " << sourceFile << std::endl;
-        std::cout << "target: " << target << std::endl;
+        //std::cout << "source: " << sourceFile << std::endl;
+        //std::cout << "target: " << target << std::endl;
         try
         {
             fs::copy_file(sourceFile, target, fs::copy_options::overwrite_existing);
@@ -114,6 +140,7 @@ bool save_sync_data(std::vector<std::string> sync_path, std::vector<std::string>
         {
             std::cout << e.what();
         }
+
     }
     return true;
 }
@@ -123,20 +150,27 @@ int main(int argc, char *argv[])
 
     // parameters
     std::string vlp_ts_path, vlp_data_path, cam_ts_path, cam_data_path;
+    std::vector<std::string> source_path(5);
     std::vector<std::string> sync_path(5); //std::string sync_path, sync_cam_ts_path, sync_cam_data_path, sync_vlp_ts_path, sync_vlp_data_path;
     std::vector<uint64_t> vlp_ts_vec, cam_ts_vec;
-    std::vector<int> vlp_sync, cam_sync;
+    std::vector<std::string> vlp_ts, cam_ts;
+    std::vector<int> vlp_sync, cam_sync; // index after synchronized
 
     
     if (argc > 1)
     {
         std::string fn = "../";
         fn += argv[1];
+        source_path[0] = fn;
         sync_path[0] = fn + "_sync";
         vlp_ts_path = fn + "/velodyne_points/timestamps.txt";
         cam_ts_path = fn + "/image_01/timestamps.txt";
         vlp_data_path = fn + "/velodyne_points/data";
         cam_data_path = fn + "/image_01/data";
+        source_path[1] = fn + "/velodyne_points/timestamps.txt";
+        source_path[3] = fn + "/image_01/timestamps.txt";
+        source_path[2] = fn + "/velodyne_points/data";
+        source_path[4] = fn + "/image_01/data";
         sync_path[1] = sync_path[0] + "/velodyne_points/timestamps.txt";
         sync_path[2] = sync_path[0] + "/velodyne_points/data";
         sync_path[3] = sync_path[0] + "/image_01/timestamps.txt";
@@ -151,8 +185,8 @@ int main(int argc, char *argv[])
     std::cout << cam_ts_path << std::endl;
 
     // store timestamps from both vlp-16 and camera
-    loadTimestampsIntoVector(vlp_ts_path, &vlp_ts_vec);
-    loadTimestampsIntoVector(cam_ts_path, &cam_ts_vec);
+    loadTimestampsIntoVector(vlp_ts_path, &vlp_ts_vec, &vlp_ts);
+    loadTimestampsIntoVector(cam_ts_path, &cam_ts_vec, &cam_ts);
 
     std::cout << "vlp timestamps: " << vlp_ts_vec.size() << std::endl;
     std::cout << "cam timestamps: " << cam_ts_vec.size() << std::endl;
@@ -160,25 +194,12 @@ int main(int argc, char *argv[])
 
     // run sync algorithm
     sync(vlp_ts_vec, cam_ts_vec, vlp_sync, cam_sync);
-
-    // test filesystem
-    std::vector<std::string> files;
-    std::string path = vlp_data_path;
-    for (const auto &entry : fs::directory_iterator(path))
-    {
-        //std::cout << entry.path() << std::endl;
-        files.push_back(entry.path());
-    }
-    std::sort(files.begin(), files.end());
-    for (auto i : files)
-    {
-        std::cout << i << std::endl;
-    }
-    
     
     // save to new directory
-    //save_sync_data(sync_path, files);
-
+    save_sync_data(source_path[2], sync_path[2], vlp_sync);
+    save_sync_data(source_path[4], sync_path[4], cam_sync);
+    writeTimestamps(sync_path[1], vlp_ts, vlp_sync); 
+    writeTimestamps(sync_path[3], cam_ts, cam_sync); 
 
     std::cout << __LINE__ << __func__ << __FILE__ << std::endl;
     std::cout << __DATE__ << std::endl;
