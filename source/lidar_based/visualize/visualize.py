@@ -65,6 +65,27 @@ def rearrange_pointcloud_by_ring(pointcloud):
             print index[i]
     return pc_rearrange, index
 
+def get_pointcloud_list_by_ring_from_pointcloud(pointcloud):
+    """
+    Return a pointcloud list by the order "laser scan 0 to 15"
+    
+    @param pointcloud: input pointcloud
+    @type: numpy array with shape (n, 5)
+    @return: output list of pointcloud 
+    @rtype: list of numpy array 
+    """
+    pc_list = []
+    for i in range(0, 16):
+        pc_i = get_points_from_laser_number(pointcloud, float(i))
+        curb = np.zeros((pc_i.shape[0],1), 'float')
+        pc_i = np.hstack((pc_i, curb))
+        left_idx = pc_i[:,1] > 0.
+        right_idx = pc_i[:,1] <= 0.
+        left = pc_i[left_idx]
+        right = pc_i[right_idx]
+        pc_list.append({'left': left, 'right': right})
+    return pc_list
+
 """
 color map for laser scan 0 to 15
 """
@@ -332,9 +353,9 @@ def rotate_pc(pointcloud, rot):
     @param pointcloud: input pointcloud
     @type: numpy array with shape (n, 5)
     @param rot: input rotation matrix
-    @type: numpy array with shape (3, 3)
+    @type: numpy array with shape (3, 3)        get_points_from_laser_number()
     @return: output rotated pointcloud
-    @rtype: numpy array with shape (n, 5)
+    @rtype: numpy array with shape (n, 5        get_points_from_laser_number()
     """
     pc_trans = np.transpose(pointcloud[:,:3])
     pc_rotated = np.matmul(rot, pc_trans)
@@ -513,6 +534,301 @@ def curb_detection_v1(msg, config, rot, height):
     #     pc_data = add_curb_column(pc_rearrange, elevation, 0.003)
     return pc2_message(msg, pc_data)
 
+# looks fine with thres_slope=0.07 thres_flat=0.04 (fails when curb is not flat)
+def find_edge_from_right_half_v02(pointcloud_right, k=6, thres_slope=0.07,thres_flat=0.04):
+    """
+    Detect and return edge points index from single laser group at right side of vehicle
+
+    @param pointcloud: input pointcloud (right & front in CW order) 
+    @type: numpy array with shape (n, 6)
+    @return: index of curb points 
+    @rtype: numpy array with shape (n, 6)
+    """
+    n =  pointcloud_right.shape[0]
+    if n - 2 * k < 0:
+        return pointcloud_right
+
+    # reorder the points
+    theta = np.zeros(n, 'float') 
+    for i in range(n):
+        theta[i] = -np.arctan2(pointcloud_right[i,1], pointcloud_right[i,0]) * 180 / np.pi 
+    order = np.argsort(theta)
+    pointcloud_right = pointcloud_right[order,:]
+
+    # calculate left_sum and right_sum
+    right_sum, left_sum = np.zeros((n-2*k), 'float'), np.zeros((n-2*k), 'float')
+    diff = []
+    pointcloud_z = pointcloud_right[:,2]
+    for i in range(1,k+1):
+        diff1 = pointcloud_z[i:]-pointcloud_z[:-i] 
+        diff.append(diff1)
+    for i in range(k):
+        if i == k - 1:
+            right_sum += diff[i][k:]
+            left_sum += (-diff[i][:-k])
+        else:
+            right_sum += diff[i][k:(i-k+1)] 
+            left_sum += (-diff[i][k-i-1:-k])
+
+    # parameters
+    curr_start, curr_end = 0, 0
+
+    # find start points    
+    is_edge_start = (right_sum > thres_slope) * (np.abs(left_sum) < thres_flat)
+    is_edge_start = np.pad(is_edge_start, (k,k), 'constant',constant_values=False)
+    pointcloud_right[:,5][is_edge_start] = 1.
+    
+    # find end points    
+    is_edge_end = (left_sum < -thres_slope) * (np.abs(right_sum) < thres_flat)
+    is_edge_end = np.pad(is_edge_end, (k,k), 'constant',constant_values=False)
+    pointcloud_right[:,5][is_edge_end] = 0.4
+
+    curb_list = []
+    for i in range(n):
+        if is_edge_start[i]:
+            curr_start = i
+        if is_edge_end[i] and curr_start != 0:
+            h =  pointcloud_z[i] - pointcloud_z[curr_start]
+            if h > 0.02 and h < 0.3:
+                curb_list.append([curr_start, i])
+                curr_start, curr_end = 0, 0
+                curb_height = pointcloud_z[i]
+
+    for c in curb_list:
+        if c[0] < c[1] and c[0] > 0 and c[1] > 0 and c[1]-c[0] > 4:
+            pointcloud_right[c[0]+1:c[1],5] = 0.7  
+    
+    # first_start =  np.argmax(pointcloud_right[:,5] > 0.5) # !!! would return 0 if nothing found
+    # first_end =  np.argmax((pointcloud_right[:,5] > 0.3) * (pointcloud_right[:,5] < 0.5)) # !!! would return 0 if nothing found
+    # if first_start < first_end:
+    #     pointcloud_right[first_start+1:first_end,5] = 0.7  
+    return pointcloud_right
+
+def find_edge_from_left_half_v02(pointcloud_left, k=4, thres_slope=0.05,thres_flat=0.02):
+    """
+    Detect and return edge points index from single laser group at left side of vehicle
+
+    @param pointcloud: input pointcloud (left & front in CW order) 
+    @type: numpy array with shape (n, 6)
+    @return: index of curb points 
+    @rtype: numpy array with shape (n, 6)
+    """
+    n =  pointcloud_left.shape[0]
+    if n - 2 * k < 0:
+        return pointcloud_left
+    
+    # calculate left_sum and right_sum
+    right_sum, left_sum = np.zeros((n-2*k), 'float'), np.zeros((n-2*k), 'float')
+    diff = []
+    pointcloud_z = pointcloud_left[:,2]
+    for i in range(1,k+1):
+        diff1 = pointcloud_z[i:]-pointcloud_z[:-i] 
+        diff.append(diff1)
+    for i in range(k):
+        if i == k - 1:
+            right_sum += diff[i][k:]
+            left_sum += (-diff[i][:-k])
+        else:
+            right_sum += diff[i][k:(i-k+1)] 
+            left_sum += (-diff[i][k-i-1:-k])
+    
+    # find start points    
+    is_edge_start = (left_sum > thres_slope) * (np.abs(right_sum) < thres_flat)
+    is_edge_start = np.pad(is_edge_start, (k,k), 'constant',constant_values=False)
+    
+    pointcloud_left[:,5][is_edge_start] = 1.
+    
+    # find end points    
+    is_edge_end = (right_sum < -thres_slope) * (np.abs(left_sum) < thres_flat)
+    is_edge_end = np.pad(is_edge_end, (k,k), 'constant',constant_values=False)
+    
+    pointcloud_left[:,5][is_edge_end] = 0.4
+
+    # parameters
+    max_curb = 0.3
+    curb_height = 0
+    curr_start, curr_end = 0, 0
+    curb_list = []
+    for i in range(n-1,-1,-1):
+        if is_edge_start[i]:
+            if curr_start == 0:
+                curr_start = i
+            else:
+                if curr_end == 0:
+                    curr_start = i
+                else:
+                    pass
+        
+        if is_edge_end[i] and curr_start != 0:
+            h =  pointcloud_z[i] - pointcloud_z[curr_start]
+            if h > 0.05 and h < 0.3:
+                curb_list.append([curr_start, i])
+            curr_start, curr_end = 0, 0
+            curb_height = pointcloud_z[i]
+
+    for c in curb_list:
+        if c[1] < c[0] and c[0] > 0 and c[1] > 0 and c[0]-c[1] > 6:
+            pointcloud_left[c[1]+1:c[0],5] = 0.7    
+
+    return pointcloud_left
+
+def unit_vec(vec):
+    return vec / np.linalg.norm(vec)
+
+def angle_between(v1, v2):
+    v1_unit = unit_vec(v1) 
+    v2_unit = unit_vec(v2) 
+    return np.arccos(np.clip(np.dot(v1_unit, v2_unit), -1., 1.))
+
+# looks fine with thres_slope=0.07 thres_flat=0.04 (fails when curb is not flat)
+def find_edge_from_right_half_v03(pointcloud_right, k=6, thres_slope=0.07,thres_flat=0.04):
+    """
+    Detect and return edge points index from single laser group at right side of vehicle
+
+    @param pointcloud: input pointcloud (right & front in CW order) 
+    @type: numpy array with shape (n, 6)
+    @return: index of curb points 
+    @rtype: numpy array with shape (n, 6)
+    """
+    n =  pointcloud_right.shape[0]
+    if n - 2 * k < 0:
+        return pointcloud_right
+
+    # reorder the points
+    theta = np.zeros(n, 'float') 
+    for i in range(n):
+        theta[i] = -np.arctan2(pointcloud_right[i,1], pointcloud_right[i,0]) * 180 / np.pi 
+    order = np.argsort(theta)
+    pointcloud_right = pointcloud_right[order,:]
+
+    # calculate left_sum and right_sum
+    right_sum, left_sum = np.zeros((n-2*k), 'float'), np.zeros((n-2*k), 'float')
+    diff = []
+    pointcloud_z = pointcloud_right[:,2]
+    for i in range(1,k+1):
+        diff1 = pointcloud_z[i:]-pointcloud_z[:-i] 
+        diff.append(diff1)
+    for i in range(k):
+        if i == k - 1:
+            right_sum += diff[i][k:]
+            left_sum += (-diff[i][:-k])
+        else:
+            right_sum += diff[i][k:(i-k+1)] 
+            left_sum += (-diff[i][k-i-1:-k])
+
+    # parameters
+    curr_start, curr_end = 0, 0
+
+    # find start points    
+    is_edge_start = (right_sum > thres_slope) * (np.abs(left_sum) < thres_flat)
+    is_edge_start = np.pad(is_edge_start, (k,k), 'constant',constant_values=False)
+    pointcloud_right[:,5][is_edge_start] = 1.
+    
+    # find end points    
+    is_edge_end = (left_sum < -thres_slope) * (np.abs(right_sum) < thres_flat)
+    is_edge_end = np.pad(is_edge_end, (k,k), 'constant',constant_values=False)
+    pointcloud_right[:,5][is_edge_end] = 0.4
+
+    curb_list = []
+    for i in range(n):
+        if is_edge_start[i]:
+            curr_start = i
+        if is_edge_end[i] and curr_start != 0:
+            h =  pointcloud_z[i] - pointcloud_z[curr_start]
+            if h > 0.02 and h < 0.3:
+                curb_list.append([curr_start, i])
+                curr_start, curr_end = 0, 0
+                curb_height = pointcloud_z[i]
+
+    # add angle thres 0.15 rad about 9 degree
+    angle_thres = 0.45
+    for c in curb_list:
+        if c[0] < c[1] and c[0] > 0 and c[1] > 0 and c[1]-c[0] > 4:
+            start = pointcloud_right[c[0]+1,:3]
+            v2 = pointcloud_right[c[1],:3] - pointcloud_right[c[0],:3]
+            isline = True
+            for i in range(c[0]+1, c[1]):
+                # print angle_between(pointcloud_right[i,:3]-start, v2)
+                if angle_between(pointcloud_right[i,:3]-start, v2) > angle_thres:
+                    isline = False
+                    break
+            if isline:
+                pointcloud_right[c[0]+1:c[1],5] = 0.7  
+    
+    # first_start =  np.argmax(pointcloud_right[:,5] > 0.5) # !!! would return 0 if nothing found
+    # first_end =  np.argmax((pointcloud_right[:,5] > 0.3) * (pointcloud_right[:,5] < 0.5)) # !!! would return 0 if nothing found
+    # if first_start < first_end:
+    #     pointcloud_right[first_start+1:first_end,5] = 0.7  
+    return pointcloud_right
+
+def find_edge_from_left_half_v03(pointcloud_left, k=4, thres_slope=0.05,thres_flat=0.02):
+    """
+    Detect and return edge points index from single laser group at left side of vehicle
+
+    @param pointcloud: input pointcloud (left & front in CW order) 
+    @type: numpy array with shape (n, 6)
+    @return: index of curb points 
+    @rtype: numpy array with shape (n, 6)
+    """
+    n =  pointcloud_left.shape[0]
+    if n - 2 * k < 0:
+        return pointcloud_left
+    
+    # calculate left_sum and right_sum
+    right_sum, left_sum = np.zeros((n-2*k), 'float'), np.zeros((n-2*k), 'float')
+    diff = []
+    pointcloud_z = pointcloud_left[:,2]
+    for i in range(1,k+1):
+        diff1 = pointcloud_z[i:]-pointcloud_z[:-i] 
+        diff.append(diff1)
+    for i in range(k):
+        if i == k - 1:
+            right_sum += diff[i][k:]
+            left_sum += (-diff[i][:-k])
+        else:
+            right_sum += diff[i][k:(i-k+1)] 
+            left_sum += (-diff[i][k-i-1:-k])
+    
+    # find start points    
+    is_edge_start = (left_sum > thres_slope) * (np.abs(right_sum) < thres_flat)
+    is_edge_start = np.pad(is_edge_start, (k,k), 'constant',constant_values=False)
+    
+    pointcloud_left[:,5][is_edge_start] = 1.
+    
+    # find end points    
+    is_edge_end = (right_sum < -thres_slope) * (np.abs(left_sum) < thres_flat)
+    is_edge_end = np.pad(is_edge_end, (k,k), 'constant',constant_values=False)
+    
+    pointcloud_left[:,5][is_edge_end] = 0.4
+
+    # parameters
+    max_curb = 0.3
+    curb_height = 0
+    curr_start, curr_end = 0, 0
+    curb_list = []
+    for i in range(n-1,-1,-1):
+        if is_edge_start[i]:
+            if curr_start == 0:
+                curr_start = i
+            else:
+                if curr_end == 0:
+                    curr_start = i
+                else:
+                    pass
+        
+        if is_edge_end[i] and curr_start != 0:
+            h =  pointcloud_z[i] - pointcloud_z[curr_start]
+            if h > 0.05 and h < 0.3:
+                curb_list.append([curr_start, i])
+            curr_start, curr_end = 0, 0
+            curb_height = pointcloud_z[i]
+
+    for c in curb_list:
+        if c[1] < c[0] and c[0] > 0 and c[1] > 0 and c[0]-c[1] > 6:
+            pointcloud_left[c[1]+1:c[0],5] = 0.7    
+
+    return pointcloud_left
+
 def curb_detection_v2(msg, config, rot, height):
     """
     Detect and return ros message with additional "curb" information  
@@ -529,29 +845,72 @@ def curb_detection_v2(msg, config, rot, height):
     @return: output ros message 
     @rtype: ros pointcloud2 message
     """
-    # get point cloud list
-    pointcloud_list = get_pointcloud_list_from_msg(msg)
-
+    pointcloud = get_pointcloud_from_msg(msg)
     if config == 'tilted': 
         pointcloud = rotate_pc(pointcloud, rot)
         pointcloud = translate_z_pc(pointcloud, height)
     else:
         pointcloud = translate_z_pc(pointcloud, height-0.2)
-    pointcloud = max_height_filter(pointcloud, .3)
+    pointcloud = max_height_filter(pointcloud, .45)
+    pointcloud = FOV_positive_x_filter(pointcloud)
+
     pc_rearrange, index = rearrange_pointcloud_by_ring(pointcloud)
-
-    # calculate elevation    
-    elevation =  elevation_map(pc_rearrange)
-
-    # calculate z difference for 5 points left and 5 points right at point i
-    edges = edge_filter(pc_rearrange[:,2], index)
-    pc_data = add_curb_column(pc_rearrange, edges, 0.5)
     
+    # get pointcloud list
+    pointcloud_list = get_pointcloud_list_by_ring_from_pointcloud(pointcloud)
 
+    pc_data = np.empty((0,6),'float') 
+    for i in range(16):
+        pc_l = find_edge_from_left_half_v02(pointcloud_list[i]['left'])
+        pc_r = find_edge_from_right_half_v02(pointcloud_list[i]['right'])
+        pc_i = np.vstack((pc_l, pc_r))
+        pc_data = np.vstack((pc_data, pc_i))
+    
     return pc2_message(msg, pc_data)
-def run_detection_and_save(data_name, data, config, tilted_angle=19.2, height=1.195):
+
+def curb_detection_v3(msg, config, rot, height):
     """
-    Run curb detection algorithm through all messages in data and store as new rosbag file
+    Detect and return ros message with additional "curb" information  
+    Version two
+
+    @param msg: input ros message
+    @type: pointcloud2
+    @param config: input config of the lidar sensor  
+    @type: string
+    @param rot: input rotation matrix
+    @type: numpy array with shape (3, 3)
+    @param height: input translation value in z direction
+    @type: float
+    @return: output ros message 
+    @rtype: ros pointcloud2 message
+    """
+    pointcloud = get_pointcloud_from_msg(msg)
+    if config == 'tilted': 
+        pointcloud = rotate_pc(pointcloud, rot)
+        pointcloud = translate_z_pc(pointcloud, height)
+    else:
+        pointcloud = translate_z_pc(pointcloud, height-0.2)
+    pointcloud = max_height_filter(pointcloud, .45)
+    pointcloud = FOV_positive_x_filter(pointcloud)
+
+    pc_rearrange, index = rearrange_pointcloud_by_ring(pointcloud)
+    
+    # get pointcloud list
+    pointcloud_list = get_pointcloud_list_by_ring_from_pointcloud(pointcloud)
+
+    pc_data = np.empty((0,6),'float') 
+    for i in range(16):
+        pc_l = find_edge_from_left_half_v03(pointcloud_list[i]['left'])
+        pc_r = find_edge_from_right_half_v03(pointcloud_list[i]['right'])
+        pc_i = np.vstack((pc_l, pc_r))
+        pc_data = np.vstack((pc_data, pc_i))
+    
+    return pc2_message(msg, pc_data)
+
+def run_detection_and_save(data_name, datta, config, tilted_angle=19.2, height=1.195):
+    """t
+    Run curb detection algorithm throught all messages in data and store as new rosbag file
+    pointcloud = get_pointcloud_from_msg(msg)
 
     @param data_name: input name of the rosbag file
     @type: string
@@ -583,7 +942,7 @@ def run_detection_and_save(data_name, data, config, tilted_angle=19.2, height=1.
     idx = 0
     for topic_1, msg_1, t_1 in lidar_data.topic_1:
         print 'frame', idx, '/', lidar_data.len_1
-        msg_1_processed = curb_detection_v1(msg_1, config, rot, height) # run curb detection algorithm 
+        msg_1_processed = curb_detection_v3(msg_1, config, rot, height) # run curb detection algorithm 
         output_bag.write(topic_1, msg_1_processed, t=t_1)
         idx += 1
     output_bag.close()
@@ -591,8 +950,11 @@ def run_detection_and_save(data_name, data, config, tilted_angle=19.2, height=1.
 topics = ['/camera/image_raw', '/points_raw']
 if __name__ == '__main__':
     data_path = data_path_loader()
-    
-    data_name = data_path['tilted'][0]
+
+    # change the number to read different rosbag file
+    # tilted: 0 to 9 
+    # horizontal: 0 to 5 
+    data_name = data_path['tilted'][2]
     # data_name = data_path['horizontal'][2]
     print data_name
     lidar_data = RosbagParser(data_name, topics)
